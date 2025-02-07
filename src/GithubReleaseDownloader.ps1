@@ -1,22 +1,81 @@
-<#
-.SYNOPSIS
-    Reads 'repos.json' in the same folder (src) 
-    and downloads the selected assets from GitHub releases.
-#>
+function ShowHeading {
+    Clear-Host
+    Write-Host "==============================="
+    Write-Host "   GitReDown by hexagonal717"
+    Write-Host "==============================="
+}
 
-# The folder containing this script, e.g. C:\SomeProject\src
+function Show-AssetMenu {
+    param (
+        [array]$assets,
+        [string]$repoName
+    )
+    while ($true) {
+        Clear-Host
+        $menuOptions = @()
+        for ($i = 0; $i -lt $assets.Count; $i++) {
+            # Only display the asset name instead of the entire object
+            $menuOptions += "$($i+1). $($assets[$i].name)"
+        }
+        $menuOptions += "b. Go Back"
+
+        ShowHeading
+        Write-Host "Repository: $repoName"
+        $menuOptions | ForEach-Object { Write-Host $_ }
+
+        $selection = Read-Host "`nEnter asset numbers to download (comma-separated), 'all'"
+        if ($selection -eq 'b') {
+            return
+        } else {
+            Download-Assets -repoName $repoName -assets $assets -selection $selection
+        }
+    }
+}
+
+function Download-Assets {
+    param (
+        [string]$repoName,
+        [array]$assets,
+        [string]$selection
+    )
+
+    if ($selection -eq 'all') {
+        $selectedAssets = $assets
+    } else {
+        $indices = ($selection -split ',') |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -match '^\d+$' } |
+            ForEach-Object { [int]$_ - 1 } |
+            Where-Object { $_ -ge 0 -and $_ -lt $assets.Count }
+
+        $selectedAssets = $indices | ForEach-Object { $assets[$_] }
+    }
+
+    if ($selectedAssets) {
+        foreach ($asset in $selectedAssets) {
+            Write-Host "Downloading $($asset.name) from $repoName..."
+            try {
+                $outFile = Join-Path $downloadsFolder $asset.name
+                Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $outFile -UseBasicParsing
+                Write-Host "Successfully downloaded: $($asset.name)"
+            } catch {
+                Write-Host "Failed to download $($asset.name): $($_.Exception.Message)"
+            }
+        }
+    } else {
+        Write-Host "No valid assets selected."
+    }
+
+    Write-Host "`nPress Enter to continue..."
+    Read-Host
+}
+
+# Rest of the original script...
 $scriptFolder = Split-Path -Parent $MyInvocation.MyCommand.Path
-
-# One level above $scriptFolder (e.g. C:\SomeProject)
 $parentFolder = Split-Path $scriptFolder -Parent
-
-# A 'downloads' folder one level above (e.g. C:\SomeProject\downloads)
 $downloadsFolder = Join-Path $parentFolder "downloads"
-
-# repos.json in the script folder (src)
 $jsonFile = Join-Path $scriptFolder "repos.json"
 
-# Create the downloads folder if it doesn't exist
 if (-not (Test-Path $downloadsFolder)) {
     New-Item -ItemType Directory -Path $downloadsFolder | Out-Null
 }
@@ -29,7 +88,7 @@ if (-not (Test-Path $jsonFile)) {
 
 try {
     $repoList = Get-Content -Path $jsonFile -Raw | ConvertFrom-Json
-    $repoList = @($repoList) # Force $repoList into an array
+    $repoList = @($repoList)
 }
 catch {
     Write-Host "Failed to parse $jsonFile. Error: $($_.Exception.Message)"
@@ -43,102 +102,59 @@ if (-not $repoList -or $repoList.Count -eq 0) {
     return
 }
 
-Write-Host "Found $($repoList.Count) repositories."
-for ($i = 0; $i -lt $repoList.Count; $i++) {
-    Write-Host "$($i + 1). $($repoList[$i].Owner)/$($repoList[$i].Name)"
-}
-
-$repoSelection = Read-Host "`nEnter repo numbers to process (comma-separated) or type 'all'"
-
-if ($repoSelection -eq 'all') {
-    $selectedRepos = $repoList
-} else {
-    $indices = ($repoSelection -split ',') `
-        | ForEach-Object { $_.Trim() } `
-        | Where-Object { $_ -match '^\d+$' } `
-        | ForEach-Object { [int]$_ - 1 } `
-        | Where-Object { $_ -ge 0 -and $_ -lt $repoList.Count }
-
-    if ($indices.Count -eq 0) {
-        Write-Host "No valid repository selections."
-        Read-Host "Press Enter to exit..."
-        return
+do {
+    ShowHeading
+    Write-Host "Found $($repoList.Count) repositories."
+    for ($i = 0; $i -lt $repoList.Count; $i++) {
+        Write-Host "$($i + 1). $($repoList[$i].Owner)/$($repoList[$i].Name)"
     }
 
-    $selectedRepos = foreach ($idx in $indices) { $repoList[$idx] }
-}
+    $repoSelection = Read-Host "`nEnter repo numbers to process (comma-separated) or type 'all'"
 
-# Collect asset choices for all selected repositories
-$downloadQueue = @()
-foreach ($repo in $selectedRepos) {
-    $owner = $repo.Owner.Trim()
-    $repoName = $repo.Name.Trim()
+    if ($repoSelection -eq 'all') {
+        $selectedRepos = $repoList
+    } else {
+        $indices = ($repoSelection -split ',') |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ -match '^\d+$' } |
+            ForEach-Object { [int]$_ - 1 } |
+            Where-Object { $_ -ge 0 -and $_ -lt $repoList.Count }
 
-    $apiUrl = "https://api.github.com/repos/$($owner)/$($repoName)/releases/latest"
-    Write-Host "`nFetching latest release from $apiUrl..."
-
-    try {
-        $releaseData = Invoke-RestMethod -Uri $apiUrl -Headers @{
-            "User-Agent" = "PowerShellScript"
-            "Accept"     = "application/vnd.github.v3+json"
-        } -ErrorAction Stop
-
-        Write-Host "Latest release for $($owner)/$($repoName): $($releaseData.tag_name)"
-
-        if ($releaseData.assets.Count -eq 0) {
-            Write-Host "No assets found for $($owner)/$($repoName)."
-            continue
+        if ($indices.Count -eq 0) {
+            Write-Host "No valid repository selections."
+            Read-Host "Press Enter to exit..."
+            return
         }
 
-        Write-Host "`nAvailable assets:"
-        for ($i = 0; $i -lt $releaseData.assets.Count; $i++) {
-            Write-Host "$($i + 1). $($releaseData.assets[$i].name)"
-        }
+        $selectedRepos = foreach ($idx in $indices) { $repoList[$idx] }
+    }
 
-        $assetSelection = Read-Host "Enter asset numbers to download (comma-separated), or 'all'"
+    foreach ($repo in $selectedRepos) {
+        $owner = $repo.Owner.Trim()
+        $repoName = $repo.Name.Trim()
+        $apiUrl = "https://api.github.com/repos/$($owner)/$($repoName)/releases/latest"
 
-        $selectedAssets = if ($assetSelection -eq 'all') {
-            $releaseData.assets
-        } else {
-            $aIndices = ($assetSelection -split ',') `
-                | ForEach-Object { $_.Trim() } `
-                | Where-Object { $_ -match '^\d+$' } `
-                | ForEach-Object { [int]$_ - 1 }
+        Clear-Host
+        ShowHeading
+        Write-Host "`nFetching latest release from $apiUrl..."
 
-            $aIndices | ForEach-Object {
-                if ($_ -ge 0 -and $_ -lt $releaseData.assets.Count) {
-                    $releaseData.assets[$_]
-                }
+        try {
+            $releaseData = Invoke-RestMethod -Uri $apiUrl -Headers @{
+                "User-Agent" = "PowerShellScript"
+                "Accept"     = "application/vnd.github.v3+json"
+            } -ErrorAction Stop
+
+            Write-Host "Latest release for $($owner)/$($repoName): $($releaseData.tag_name)"
+
+            if ($releaseData.assets.Count -eq 0) {
+                Write-Host "No assets found for $($owner)/$($repoName)."
+                continue
             }
-        }
 
-        if ($selectedAssets) {
-            $downloadQueue += foreach ($asset in $selectedAssets) {
-                @{
-                    Url = $asset.browser_download_url
-                    FileName = Join-Path $downloadsFolder $asset.name
-                    Repo = "$($owner)/$($repoName)"
-                }
-            }
-        } else {
-            Write-Host "No valid asset selections for $($owner)/$($repoName)."
+            Show-AssetMenu -assets $releaseData.assets -repoName "$owner/$repoName"
+        }
+        catch {
+            Write-Host "Error processing $($owner)/$($repoName): $($_.Exception.Message)"
         }
     }
-    catch {
-        Write-Host "Error processing $($owner)/$($repoName): $($_.Exception.Message)"
-    }
-}
-
-# Download all selected assets
-foreach ($downloadItem in $downloadQueue) {
-    Write-Host "`nDownloading $($downloadItem.FileName) from $($downloadItem.Repo)..."
-    try {
-        Invoke-WebRequest -Uri $downloadItem.Url -OutFile $downloadItem.FileName -UseBasicParsing
-        Write-Host "Downloaded: $($downloadItem.FileName)"
-    }
-    catch {
-        Write-Host "Failed to download $($downloadItem.FileName). Error: $($_.Exception.Message)"
-    }
-}
-
-Write-Host "`nAll downloads completed."
+} while ($true)
