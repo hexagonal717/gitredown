@@ -15,7 +15,6 @@ To use this tool, you'll need the following:
 
 - **PowerShell 5.1 or later**.
 - **An active internet connection** for accessing GitHub’s API and downloading files.
-- **GitHub API access** to fetch the latest releases from repositories.
 
 ---
 
